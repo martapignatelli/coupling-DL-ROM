@@ -1,7 +1,7 @@
 import tensorflow as tf
 import pandas as pd
 import numpy as np
-from model import NN_Model
+from model import DenseNetwork, FourierFeatures
 
 ##
 # @param x (numpy.ndarray): The input data for the model.
@@ -12,8 +12,13 @@ def plot_prediction(x: np.ndarray, y: np.ndarray, model_path: str) -> None:
     Plot the prediction from the surrogate model.
     """
     # Load the saved model
-    model = NN_Model()
-    model.load_model(model_path)
+    model = tf.keras.models.load_model(
+        model_path, 
+        custom_objects={"DenseNetwork": DenseNetwork, 'FourierFeatures': FourierFeatures})
+    
+
+    model.summary()
+
 
     # Make a prediction
     y_pred = model.predict(x)
@@ -49,10 +54,11 @@ def plot_prediction(x: np.ndarray, y: np.ndarray, model_path: str) -> None:
     plt.xlim(-50, 50)
     plt.xlabel("coords")
     plt.ylabel("Absolute Error")
-    plt.title(f"Absolute Error of Surrogate Model Prediction (MSE: {mse:.4f})")
+    plt.title(f"Absolute Error of Surrogate Model Prediction")
     mean_abs_error = np.mean(abs_diff)
     plt.axhline(mean_abs_error, color="orange", linestyle="--", label=f"Mean Abs Error: {mean_abs_error:.4f}")
     plt.axhline(np.sqrt(mse), color="purple", linestyle="--", label=f"RMSE: {np.sqrt(mse):.4f}")
+    plt.axhline(mse, color="red", linestyle="--", label=f"MSE: {mse:.6f}")
     plt.legend()
     plt.grid(True)
     plt.show()

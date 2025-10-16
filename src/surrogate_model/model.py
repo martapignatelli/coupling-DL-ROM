@@ -1,33 +1,9 @@
 import os
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from typing import List, Optional, Callable, Tuple
 import numpy as np
 import datetime
 from keras.saving import register_keras_serializable
-
-
-@register_keras_serializable()
-class PositionalEncodingLayer(tf.keras.layers.Layer):
-    def __init__(self, positional_encoding_frequencies, **kwargs):
-        super().__init__(**kwargs)
-        self.positional_encoding_frequencies = positional_encoding_frequencies
-
-    def call(self, x):
-        x3 = tf.expand_dims(x[:, 3], -1)
-        encoded = [x3]
-        for i in range(1, self.positional_encoding_frequencies + 1):
-            freq = 2.0 ** i * np.pi
-            encoded.append(tf.sin(freq * x3))
-            encoded.append(tf.cos(freq * x3))
-        return tf.concat([x[:, :3], *encoded], axis=-1)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "positional_encoding_frequencies": self.positional_encoding_frequencies
-        })
-        return config
     
 @register_keras_serializable()
 class FourierFeatures(tf.keras.layers.Layer):
@@ -47,7 +23,7 @@ class FourierFeatures(tf.keras.layers.Layer):
             self.freqs = tf.constant(2.0 ** tf.range(1, self.num_frequencies + 1, dtype=tf.float32)[tf.newaxis, :])
 
     def call(self, x):
-        # Use the same approach as PositionalEncodingLayer, but with learnable or fixed frequencies
+        # Use the same positional encoding approach with learnable or fixed frequencies
         x3 = tf.expand_dims(x[:, 3], -1)
         encoded = [x3]
         for i in range(self.num_frequencies):
@@ -82,48 +58,17 @@ class LogUniformFreqInitializer(tf.keras.initializers.Initializer):
         return {'min_exp': self.min_exp, 'max_exp': self.max_exp}
 
 
-class NN_Model:
+@register_keras_serializable()
+class DenseNetwork(tf.keras.Model):
     """
     A class to build, train, and manage a neural network model using TensorFlow and Keras.
     """
 
     ##
-    def __init__(self):
-        """
-        Initializes the NN_Model class with an empty Sequential model and a None history.
-        """
-        self.model: tf.keras.models.Sequential = tf.keras.models.Sequential()
-        self.history = None
-
-    ## 
-    # @param model_path (str): The path to the saved model.
-    # @return None
-    def load_model(self, model_path: str) -> None:
-        """
-        Loads a model saved at the specified path.
-        """
-        self.model = tf.keras.models.load_model(model_path)
-
-    ##
-    # @param input_shape (int): The shape of the input layer.
-    # @param n_neurons (List[int]): A list containing the number of neurons for each layer.
-    # @param activation (str): The activation function for the hidden layers.
-    # @param output_neurons (int): The number of neurons in the output layer.
-    # @param output_activation (str): The activation function for the output layer.
-    # @param initializer (str): The initializer for the layer weights.
-    # @param l1_coeff (float): The coefficient for L1 regularization.
-    # @param l2_coeff (float): The coefficient for L2 regularization.
-    # @param batch_normalization (bool): Whether to apply batch normalization after each layer.
-    # @param dropout (bool): Whether to apply dropout after each layer.
-    # @param dropout_rate (float): The dropout rate to be applied if dropout is True.
-    # @param layer_normalization (bool): Whether to apply layer normalization after each layer.
-    # @param positional_encoding_frequencies (int): The number of frequencies for positional encoding.
-    # @return None
-    # @throws ValueError: If the length of `n_neurons` and `activations` lists do not match.
-    def build_model(self,  
-                X: np.ndarray,
-                input_shape: int, 
-                n_neurons: list = [64, 64, 64, 64, 64, 64, 64, 64], 
+    def __init__(self,
+                X: np.ndarray = None,
+                input_neurons: int = 1, 
+                n_neurons: list = None, 
                 activation: str = 'tanh',
                 output_neurons: int = 1,
                 output_activation: str = 'linear',
@@ -135,11 +80,40 @@ class NN_Model:
                 dropout_rate: float = 0.3,
                 leaky_relu_alpha: float = None,
                 layer_normalization: bool = False,
-                positional_encoding_frequencies: int = 0) -> None:
+                positional_encoding_frequencies: int = 0,
+                **kwargs):
         """
-        Constructs the neural network model layer by layer with optional positional encoding.
+        Initializes the NN_Model class with an empty Sequential model and a None history.
         """
 
+        super().__init__(**kwargs)
+
+        self.X = X
+        self.input_neurons = input_neurons
+        self.n_neurons = n_neurons or [64] * 8  # safe default
+        self.activation = activation
+        self.output_neurons = output_neurons
+        self.output_activation = output_activation
+        self.initializer = initializer
+        self.l1_coeff = l1_coeff
+        self.l2_coeff = l2_coeff
+        self.batch_normalization = batch_normalization
+        self.dropout = dropout
+        self.dropout_rate = dropout_rate
+        self.leaky_relu_alpha = leaky_relu_alpha
+        self.layer_normalization = layer_normalization
+        self.positional_encoding_frequencies = positional_encoding_frequencies
+        self.all_layers = list()
+
+        # Initialize history to None
+        self.history = None
+
+
+    def build(self, input_shape):
+        """
+        Builds the model layers based on the input shape.
+        Called automatically when the model is first used.
+        """
         l1_l2 = tf.keras.regularizers.l1_l2
         Dense = tf.keras.layers.Dense
         BatchNormalization = tf.keras.layers.BatchNormalization
@@ -147,61 +121,116 @@ class NN_Model:
         LeakyReLU = tf.keras.layers.LeakyReLU
         Normalization = tf.keras.layers.Normalization
 
-        inputs = tf.keras.Input(shape=(input_shape,))
+        self.all_layers = []
 
-        normalizer = Normalization(axis=-1)
-        normalizer.adapt(X)
-        x = normalizer(inputs)
+        # Normalization
+        if self.X is not None:
+            norm_layer = Normalization(axis=-1)
+            if self.X.ndim == 3:
+                norm_layer.adapt(self.X.reshape(-1, self.X.shape[-1]))
+            else:
+                norm_layer.adapt(self.X)
+            self.all_layers.append(norm_layer)
 
-        #x = PositionalEncodingLayer(positional_encoding_frequencies=positional_encoding_frequencies)(x)
+        # Positional Encoding
+        if self.positional_encoding_frequencies and self.positional_encoding_frequencies > 0:
+            self.all_layers.append(FourierFeatures(
+                num_frequencies=self.positional_encoding_frequencies, 
+                learnable=True, 
+                initializer=LogUniformFreqInitializer(min_exp=0.0, max_exp=8.0)
+            ))
 
-        x = FourierFeatures(num_frequencies=positional_encoding_frequencies, learnable=True, initializer=LogUniformFreqInitializer(min_exp=0.0, max_exp=8.0))(x)
-        
-        # First layer
-        if leaky_relu_alpha is not None:
-            x = Dense(n_neurons[0], kernel_initializer=initializer,
-                    kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
-            x = LeakyReLU(alpha=leaky_relu_alpha)(x)
+        # First hidden layer
+        if self.leaky_relu_alpha is not None:
+            self.all_layers.append(Dense(
+                self.n_neurons[0], 
+                kernel_initializer=self.initializer,
+                kernel_regularizer=l1_l2(l1=self.l1_coeff, l2=self.l2_coeff)
+            ))
+            self.all_layers.append(LeakyReLU(alpha=self.leaky_relu_alpha))
         else:
-            x = Dense(n_neurons[0], activation=activation,
-                    kernel_initializer=initializer,
-                    kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
-
-        if batch_normalization:
-            x = BatchNormalization()(x)
-        if dropout:
-            x = Dropout(dropout_rate)(x)
+            self.all_layers.append(Dense(
+                self.n_neurons[0], 
+                activation=self.activation,
+                kernel_initializer=self.initializer,
+                kernel_regularizer=l1_l2(l1=self.l1_coeff, l2=self.l2_coeff)
+            ))
+        
+        if self.batch_normalization:
+            self.all_layers.append(BatchNormalization())
+        if self.dropout:
+            self.all_layers.append(Dropout(self.dropout_rate))
 
         # Hidden layers
-        for neurons in n_neurons[1:]:
-            if leaky_relu_alpha is not None:
-                x = Dense(neurons, kernel_initializer=initializer,
-                        kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
-                x = LeakyReLU(alpha=leaky_relu_alpha)(x)
+        for neurons in self.n_neurons[1:]:
+            if self.leaky_relu_alpha is not None:
+                self.all_layers.append(Dense(
+                    neurons, 
+                    kernel_initializer=self.initializer,
+                    kernel_regularizer=l1_l2(l1=self.l1_coeff, l2=self.l2_coeff)
+                ))
+                self.all_layers.append(LeakyReLU(alpha=self.leaky_relu_alpha))
             else:
-                x = Dense(neurons, activation=activation,
-                        kernel_initializer=initializer,
-                        kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
+                self.all_layers.append(Dense(
+                    neurons, 
+                    activation=self.activation,
+                    kernel_initializer=self.initializer,
+                    kernel_regularizer=l1_l2(l1=self.l1_coeff, l2=self.l2_coeff)
+                ))
 
-            if batch_normalization:
-                x = BatchNormalization()(x)
-            if dropout:
-                x = Dropout(dropout_rate)(x)
-            if layer_normalization:
-                x = tf.keras.layers.LayerNormalization()(x)
-
+            if self.batch_normalization:
+                self.all_layers.append(BatchNormalization())
+            if self.dropout:
+                self.all_layers.append(Dropout(self.dropout_rate))
+            if self.layer_normalization:
+                self.all_layers.append(tf.keras.layers.LayerNormalization())
+        
         # Output layer
-        if leaky_relu_alpha is not None:
-            x = Dense(output_neurons,
-                    kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
-            x = LeakyReLU(alpha=leaky_relu_alpha)(x)
-        else:
-            x = Dense(output_neurons, activation=output_activation,
-                    kernel_regularizer=l1_l2(l1=l1_coeff, l2=l2_coeff))(x)
+        self.all_layers.append(Dense(
+            self.output_neurons, 
+            activation=self.output_activation,
+            kernel_regularizer=l1_l2(l1=self.l1_coeff, l2=self.l2_coeff)
+        ))
 
-        self.model = tf.keras.Model(inputs=inputs, outputs=x)
+        dummy_input = tf.keras.Input(shape=(self.input_neurons,))
+        self.call(dummy_input)
 
+        super(DenseNetwork, self).build(input_shape)
 
+    def call(self, x):
+        for layer in self.all_layers:
+            x = layer(x)
+        return x
+    
+    def get_config(self):
+        # Return the config necessary to reconstruct this model
+        base_config = super(DenseNetwork, self).get_config()
+        return {
+            **base_config,
+            "X": self.X.tolist() if self.X is not None else None,
+            "input_neurons": self.input_neurons,
+            "n_neurons": self.n_neurons,
+            "activation": self.activation,
+            "output_neurons": self.output_neurons,
+            "output_activation": self.output_activation,
+            "initializer": self.initializer,
+            "l1_coeff": self.l1_coeff,
+            "l2_coeff": self.l2_coeff,
+            "batch_normalization": self.batch_normalization,
+            "dropout": self.dropout,
+            "dropout_rate": self.dropout_rate,
+            "leaky_relu_alpha": self.leaky_relu_alpha,
+            "layer_normalization": self.layer_normalization,
+            "positional_encoding_frequencies": self.positional_encoding_frequencies,
+        }
+
+    @classmethod
+    def from_config(cls, config):
+        if config["X"] is not None:
+            config["X"] = np.array(config["X"])
+        return cls(**config)
+        
+        
     ##
     # @param X (np.ndarray): The input data for training.
     # @param y (np.ndarray): The target data for training.
@@ -248,17 +277,17 @@ class NN_Model:
         if optimizer == 'sgd':
             optimizer = tf.keras.optimizers.SGD
             if clipnorm is not None:
-                self.model.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, momentum=0.9, nesterov=True, clipnorm=clipnorm))
+                self.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, momentum=0.9, nesterov=True, clipnorm=clipnorm))
             else:
-                self.model.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, momentum=0.9, nesterov=True))
+                self.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, momentum=0.9, nesterov=True))
         elif optimizer == 'rmsprop':
-            self.model.compile(loss=loss, metrics=metrics,optimizer=tf.keras.optimizers.RMSprop(learning_rate=learning_rate, rho=0.9, momentum=0.9, epsilon=1e-07, centered=False))
+            self.compile(loss=loss, metrics=metrics,optimizer=tf.keras.optimizers.RMSprop(learning_rate=learning_rate, rho=0.9, momentum=0.9, epsilon=1e-07, centered=False))
         elif optimizer == 'adam':
             optimizer = tf.keras.optimizers.Adam
             if clipnorm is not None:
-                self.model.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, clipnorm=clipnorm))
+                self.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate, clipnorm=clipnorm))
             else:
-                self.model.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate))
+                self.compile(loss=loss, metrics=metrics,optimizer=optimizer(learning_rate=learning_rate))
         
         callbacks = []
         if lr_scheduler is not None:
@@ -281,13 +310,11 @@ class NN_Model:
             )
             callbacks.append(early_stopping)
 
-        self.history = self.model.fit(
+        self.history = self.fit(
             X, y, epochs=epochs, batch_size=batch_size, verbose=verbose,
             validation_data=(X_val, y_val), validation_freq=validation_freq,
             callbacks=callbacks
         )
-
-        self.plot_training_history()
 
     ##
     def plot_training_history(self) -> None:
@@ -312,122 +339,3 @@ class NN_Model:
         plt.grid(True)
         plt.show()
 
-    ##
-    # @param model_path (str): The file path where the model should be saved.
-    def save_model(self, model_path: str) -> None:
-        """
-        Saves the current state of the model to a specified file path.
-        """
-        self.model.save(model_path)
-
-    ## 
-    def evaluate_model(self,
-                        X: np.ndarray, 
-                        y: np.ndarray) -> None:
-        results = self.model.evaluate(X, y, return_dict=True)
-        print(results)
-
-    ##
-    def summary(self) -> None:
-        self.model.summary(expand_nested=False, show_trainable=True)
-
-    ##
-    # @param X (np.ndarray): The input data for making predictions.
-    # @return np.ndarray: The predicted values.
-    # @returns The predicted values.
-    # @throws ValueError: If the input array is empty.
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        Makes predictions using the trained model.
-        """
-        return self.model.predict(X, verbose=0)
-    
-
-
-class DeepONet:
-    """A class to build a DeepONet model for approximating functions using a neural network."""
-    ##
-    # @param 
-    def build_model(self,  
-                X: np.ndarray,
-                input_shape: int, 
-                n_neurons: list = [64, 64, 64, 64, 64, 64, 64, 64], 
-                activation: str = 'tanh',
-                output_neurons: int = 1,
-                output_activation: str = 'linear',
-                initializer: str = 'glorot_uniform',
-                l1_coeff: float = 0,
-                l2_coeff: float = 0,
-                batch_normalization: bool = False,
-                dropout: bool = False,
-                dropout_rate: float = 0.3,
-                leaky_relu_alpha: float = None,
-                layer_normalization: bool = False,
-                positional_encoding_frequencies: int = 0) -> None:
-        """
-        Constructs the neural network model layer by layer with optional positional encoding.
-        """
-        # Spatial dimension
-        dim = 2 
-        # Low rank approximation rank
-        r = 20
-
-        # Number of samples for training
-        n_samples = 1000 
-        # Number of parameters
-        n_geom_param = 3
-        # Geometric parameters for training
-        mu_train = np.random.rand(n_samples, n_geom_param) 
-
-        # Maximum number of degrees of freedom, we perform masking with a point where we not the potential (point on the lower plate)
-        nh = 20000 
-        x_train = np.random.rand(n_samples, nh, dim)
-        y_train = np.random.rand(n_samples, nh, 1)
-
-        branch = NN_Model()
-
-        branch.build_model(
-            X = mu_train, 
-            input_shape = n_geom_param, 
-            n_neurons = [512, 256, 128, 256], 
-            activation = 'leaky_relu', 
-            output_neurons = r, 
-            output_activation = 'linear', 
-            initializer = 'he_normal',
-            l1_coeff= 0, 
-            l2_coeff = 1e-3, 
-            batch_normalization = True, 
-            dropout = True, 
-            dropout_rate = 0.2, 
-            leaky_relu_alpha = 0.1,
-            layer_normalization = False,
-            positional_encoding_frequencies = 0,
-        )
-
-        branch.summary()
-
-        Q = branch(mu_train) # Output shape should be (ns, r)
-
-        trunk = NN_Model()
-
-        trunk.build_model(
-            X = x_train, 
-            input_shape = nh*dim, 
-            n_neurons = [512, 256, 128, 256], 
-            activation = 'leaky_relu', 
-            output_neurons = r, 
-            output_activation = 'linear', 
-            initializer = 'he_normal',
-            l1_coeff= 0, 
-            l2_coeff = 1e-3, 
-            batch_normalization = True, 
-            dropout = True, 
-            dropout_rate = 0.2, 
-            leaky_relu_alpha = 0.1,
-            layer_normalization = False,
-            positional_encoding_frequencies = 0,
-        )
-
-        V = trunk(x_train) # Output shape should be (nh, r)
-
-        S_hat = tf.matmul(Q, V, transpose_b=True)  # Shape should be (ns, nh)
