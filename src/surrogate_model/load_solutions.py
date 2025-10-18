@@ -41,10 +41,15 @@ def load_h5_solutions():
         all_grad_y[i] = np.pad(all_grad_y[i], (0, max_len - len(all_grad_y[i])), 'constant', constant_values=np.nan)
 
     # Stack arrays in each list to create 2D matrixes
-    x_matrix = np.stack(all_x)
-    y_matrix = np.stack(all_y)
-    potential_matrix = np.stack(all_potential)
-    grad_x_matrix = np.stack(all_grad_x)
-    grad_y_matrix = np.stack(all_grad_y)
+    x = np.stack(all_x)
+    y = np.stack(all_y)
+    potential = np.stack(all_potential)
+    grad_x = np.stack(all_grad_x)
+    grad_y = np.stack(all_grad_y)
 
-    return x_matrix, y_matrix, potential_matrix, grad_x_matrix, grad_y_matrix
+    import pandas as pd
+    data_csv = pd.read_csv('data/parameters.csv')
+    mu = data_csv.iloc[:, 1:4] # geometrical parameters
+    mu = np.array(mu)
+
+    return mu, x, y, potential, grad_x, grad_y

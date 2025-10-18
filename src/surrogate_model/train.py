@@ -3,7 +3,7 @@ import tensorflow as tf
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from model import DenseNetwork, DeepONet
-from meshes_coordinates import load_h5_solutions
+from load_solutions import load_h5_solutions
 
 def train_dense_network(model_path: str, seed: int = 40):
 
@@ -259,7 +259,7 @@ def train_potential(model_path: str, seed: int = 40):
     import numpy as np
 
     # Import coordinates dataset and solutions
-    x1, x2, pot, gx, gy = load_h5_solutions()
+    mu, x1, x2, pot, gx, gy = load_h5_solutions()
     x = np.stack((x1, x2), axis=2)
 
     # Hyperparameters setup --------------------------------------------------------
@@ -270,10 +270,6 @@ def train_potential(model_path: str, seed: int = 40):
     nh = len(x1[0]) # max number of dofs = x-coordinates available for each mesh
     seed = seed     # random seed for data splitting
     # ------------------------------------------------------------------------------
-
-    data_csv = pd.read_csv('data/parameters.csv')
-    mu = data_csv.iloc[:, 1:4] # geometrical parameters
-    mu = np.array(mu)
 
     y = pot   # solution at x-coordinates
     y = np.array(y)
@@ -316,7 +312,7 @@ def train_potential(model_path: str, seed: int = 40):
         dropout = True, 
         dropout_rate = 0.5, 
         leaky_relu_alpha = None,
-        layer_normalization = False,
+        layer_normalization = True,
         positional_encoding_frequencies = 0,
     )
 
@@ -334,8 +330,8 @@ def train_potential(model_path: str, seed: int = 40):
         dropout = True, 
         dropout_rate = 0.5, 
         leaky_relu_alpha = None,
-        layer_normalization = False,
-        positional_encoding_frequencies = 20,
+        layer_normalization = True,
+        positional_encoding_frequencies = 10,
     )
 
     model = DeepONet(branch = branch, trunk = trunk)
@@ -346,7 +342,7 @@ def train_potential(model_path: str, seed: int = 40):
     # --- Learning rate schedule ---
     def lr_warmup_schedule(epoch, lr):
         warmup_epochs = 5
-        base_lr = 5e-4
+        base_lr = 1e-3
         start_lr = 1e-6
         if epoch <= warmup_epochs:
             return start_lr + (base_lr - start_lr) * (epoch / warmup_epochs)
@@ -361,24 +357,7 @@ def train_potential(model_path: str, seed: int = 40):
         verbose=1
     )
 
-    # Be very careful about precision, since here tf.reduce_sum(mask) 
-    # can be very big if the number of points in a batch is large.
-    # Here we use float32 globally to avoid issues, 
-    # that ensure that we don't get overflow in the summation 
-    # when the number of points is less than 3.4e38.
-    # Using mixed precision with float16 would lead to overflow
-    # when the number of points in batch is larger than ~6e4.
-    def masked_mse(y_true, y_pred):
-        mask = tf.cast(~tf.math.is_nan(y_true), y_pred.dtype)
-        y_true = tf.where(tf.math.is_nan(y_true), 0.0, y_true)
-        y_true = tf.cast(y_true, y_pred.dtype)
-        return tf.reduce_sum(mask * tf.square(y_pred - y_true)) / tf.reduce_sum(mask)
-
-    def masked_mae(y_true, y_pred):
-        mask = tf.cast(~tf.math.is_nan(y_true), y_pred.dtype)
-        y_true = tf.where(tf.math.is_nan(y_true), 0.0, y_true)
-        y_true = tf.cast(y_true, y_pred.dtype)
-        return tf.reduce_sum(mask * tf.abs(y_pred - y_true)) / tf.reduce_sum(mask)
+    from masked_losses import masked_mse, masked_mae
 
     model.train_model(
         X = x_train,
@@ -409,6 +388,3 @@ def train_potential(model_path: str, seed: int = 40):
     model.save(model_path)
 
     model.plot_training_history()
-
-    
-

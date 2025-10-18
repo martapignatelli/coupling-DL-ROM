@@ -23,15 +23,15 @@ class FourierFeatures(tf.keras.layers.Layer):
             self.freqs = tf.constant(2.0 ** tf.range(1, self.num_frequencies + 1, dtype=tf.float32)[tf.newaxis, :])
 
     def call(self, x):
-        # x shape: (batch, time, feature)
-        x_last = x[..., -1:]  # shape: (batch, time, 1)
         # Start encoding list
         encoded = []
         # Apply sinusoidal or learnable frequency encoding
         for i in range(self.num_frequencies):
             freq = self.freqs[0, i]
-            encoded.append(tf.sin(freq * x_last))
-            encoded.append(tf.cos(freq * x_last))
+            for j in range(x.shape[-1]): # x shape: (batch, time, feature)
+                current_x = x[..., j:j+1]  # shape: (batch, time, 1)
+                encoded.append(tf.sin(freq * current_x))
+                encoded.append(tf.cos(freq * current_x))
         # Concatenate along the feature dimension
         encoded_features = tf.concat(encoded, axis=-1)
         # Combine the original x with the new encodings
